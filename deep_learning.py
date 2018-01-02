@@ -1,7 +1,7 @@
-import pandas as pd 
+import pandas as pd
 import time
 import seaborn as sns
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import datetime
 import numpy as np
 # Keras imports
@@ -11,11 +11,13 @@ from keras.layers import LSTM
 from keras.layers import Dropout
 # to load existing models
 from keras.models import load_model
-# For training and testing sets 
+# For training and testing sets
 from sklearn.model_selection import train_test_split
 # For plotting
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+# for fixing numbers
+import re
 
 # Mins and Maxes necessary for normalization
 MINIMUM_VOLUME = 0
@@ -34,7 +36,6 @@ def calculate_close_off_high(row):
     high, low, close = row['High'], row['Low'], row['Close']
     numerator = 2*(close - high)
     denominator = (low - high)
-    print low, high
     if denominator == 0:
         return 0
     return (-1) + (numerator / float(denominator))
@@ -45,7 +46,7 @@ def calculate_volatility(row):
     a = high, b = low, c = open_price
     """
     high, low, open_price = row['High'], row['Low'], row['Open']
-    numerator = high - low 
+    numerator = high - low
     if (open_price == 0 or type(open_price) != float):
         return 0
     return numerator/float(open_price)
@@ -57,6 +58,32 @@ def fix_volume(row):
     if row['Volume'] == '-':
         return 0
     return row['Volume']
+
+def fix_columns(column):
+    """
+    Sets a column equal to 0 if equivalent to '-'
+    """
+    if type(column) is float:
+        return column
+    numbers = re.search(r'\d+', column.encode('utf-8'))
+    if not numbers:
+        return 0
+    return column
+
+def fix_stock_volume(row):
+    """
+    Converts 'mil' to number
+    Sets volume equal to 0 if volume = '-'
+    """
+    if type(row['Volume']) is float:
+        return row['Volume']
+    if 'mil' in row['Volume'].lower():
+        number, _ = row['Volume'].split(' ')
+        number = float(number)
+        number *= 1000000
+        print number
+        return number
+    return 0
 
 def find_min_max(dataframe):
     """
@@ -77,7 +104,7 @@ def normalize_volume(row):
     """
     Algorithm: a + (((x - A)(b - a))/(B - A))
     a = 1, b = -1 => (b-a = -2)
-    A = Highest, B = Lowest 
+    A = Highest, B = Lowest
     X = Current
     """
     numerator = (-2) * (row['Volume'] - MAXIMUM_VOLUME)
@@ -85,12 +112,12 @@ def normalize_volume(row):
     if denominator == 0:
         return 0
     return 1 + (numerator / float(denominator))
-    
+
 def normalize_close_prices(row):
     """
     Algorithm: a + (((x - A)(b - a))/(B - A))
     a = 1, b = -1 => (b-a = -2)
-    A = Highest, B = Lowest 
+    A = Highest, B = Lowest
     X = Current
     """
     numerator = (-2) * (row['Close'] - MAXIMUM_CLOSE)
@@ -101,7 +128,7 @@ def normalize_close_prices(row):
 
 def normalize(dataframe):
     """
-    
+
     """
     normalized_volumes = dataframe.apply(normalize_volume, axis=1)
     normalized_close_prices = dataframe.apply(normalize_close_prices, axis=1)
@@ -127,10 +154,10 @@ def check_single_timepoint(initial_data, model, LSTM_testing_inputs, testing_set
     ax1.plot(initial_data[initial_data['Date'] > split_date]['Date'][10:].astype(datetime.datetime),
              testing_set['Close'][window_len:], label='Actual')
     ax1.plot(initial_data[initial_data['Date'] > split_date]['Date'][10:].astype(datetime.datetime),
-             ((np.transpose(model.predict(LSTM_testing_inputs))+1) * testing_set['Close'].values[:-window_len])[0], 
+             ((np.transpose(model.predict(LSTM_testing_inputs))+1) * testing_set['Close'].values[:-window_len])[0],
              label='Predicted')
     ax1.annotate('MAE: %.4f'%np.mean(np.abs((np.transpose(model.predict(LSTM_testing_inputs))+1)-\
-                (testing_set['Close'].values[window_len:])/(testing_set['Close'].values[:-window_len]))), 
+                (testing_set['Close'].values[window_len:])/(testing_set['Close'].values[:-window_len]))),
                  xy=(0.75, 0.9),  xycoords='axes fraction',
                 xytext=(0.75, 0.9), textcoords='axes fraction')
     ax1.set_title('Test Set: Single Timepoint Prediction',fontsize=13)
@@ -167,19 +194,54 @@ def get_crypto_data(crypto_name):
     # print model_info.head()
     # Return dataset
     return model_info
-    
-def build_model(inputs, output_size, neurons, activ_func = "linear", 
+
+def get_stock_data(stock):
+    """
+
+    """
+    url = "http://performance.morningstar.com/perform/Performance/stock/price-history.action?&t={}&region=usa&culture=en-US&cur=&ops=clear&pd=max&sd=&ed=&freq=d&pg=0&pgsz=10000".format(stock)
+    market_info = pd.read_html(url)[0]
+    # convert the date string to the correct date format
+    market_info = market_info.assign(Date=pd.to_datetime(market_info['Date']))
+    # fix numbers
+    market_info['Open'] = market_info.apply(lambda col: fix_columns(col['Open']), axis=1)
+    market_info['High'] = market_info.apply(lambda col: fix_columns(col['High']), axis=1)
+    market_info['Low'] = market_info.apply(lambda col: fix_columns(col['Low']), axis=1)
+    market_info['Close'] = market_info.apply(lambda col: fix_columns(col['Close']), axis=1)
+    print market_info
+    # convert high, low, open, close to numbers
+    market_info['High'] = market_info['High'].astype('float64')
+    market_info['Low'] = market_info['Low'].astype('float64')
+    market_info['Open'] = market_info['Open'].astype('float64')
+    market_info['Close'] = market_info['Close'].astype('float64')
+    # create new series of dataframes
+    model_info = market_info[['Date', 'Close', 'Volume']].copy()
+    # add new columns
+    model_info['Close_Off_High'] = market_info.apply(calculate_close_off_high, axis=1)
+    model_info['Volatility'] = market_info.apply(calculate_volatility, axis=1)
+    # fix volume
+    model_info['Volume'] = model_info.apply(fix_stock_volume, axis=1)
+    # model_info['Volume'] = model_info['Volume'].astype('int64')
+    # normalize data
+    find_min_max(model_info)
+    model_info['Volume'], model_info['Close'] = normalize(model_info)
+    # Reverses order of dataframes, so that oldest are now at head
+    # What's going on in longer code: model_info = model_info.reindex(index=model_info.index[::-1])
+    model_info = model_info.iloc[::-1]
+    return model_info
+
+def build_model(inputs, output_size, neurons, activ_func = "linear",
                 dropout = 0.25, loss = "mae", optimizer = "adam"):
-    # Type of model 
+    # Type of model
     model = Sequential()
     # Setup LSTM
     model.add(LSTM(neurons, input_shape=(inputs.shape[1], inputs.shape[2])))
     # Setup Dropout to reduce overfitting
     model.add(Dropout(dropout))
-    # Add Dense 
+    # Add Dense
     model.add(Dense(units=output_size))
     model.add(Activation(activ_func))
-    # Finish building model 
+    # Finish building model
     model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
     return model
 
@@ -188,9 +250,9 @@ def setup_inputs_outputs(crypto):
     """
     # Get Data
     initial_data = get_crypto_data(crypto)
-    # Separate data into training and testing sets 
+    # Separate data into training and testing sets
     training_set, testing_set = train_test_split(initial_data, test_size=0.2, shuffle=False)
-    # split date 
+    # split date
     split_date = (training_set.tail(1)).iloc[0]['Date']
     # We no longer need dates
     training_set = training_set.drop('Date', axis=1)
@@ -206,13 +268,48 @@ def setup_inputs_outputs(crypto):
         # for col in norm_cols:
         #     temp_set.loc[:, col] = temp_set[col]/temp_set[col].iloc[0] - 1
         LSTM_training_inputs.append(temp_set)
-    # Create testing inputs 
+    # Create testing inputs
     for index in range(len(testing_set) - window_len):
         temp_set = testing_set[index: (index + window_len)].copy()
         LSTM_testing_inputs.append(temp_set)
     # Getting input dimensions
     # print LSTM_testing_inputs
-    # Turn into numpy array 
+    # Turn into numpy array
+    LSTM_training_inputs = np.array([np.array(LSTM_training_input) for LSTM_training_input in LSTM_training_inputs])
+    LSTM_testing_inputs = np.array([np.array(LSTM_testing_input) for LSTM_testing_input in LSTM_testing_inputs])
+    # model output is next price normalised to 10th previous closing price
+    LSTM_training_outputs = (training_set['Close'][window_len:].values/training_set['Close'][:-window_len].values)-1
+    LSTM_test_outputs = (testing_set['Close'][window_len:].values/testing_set['Close'][:-window_len].values)-1
+    return LSTM_training_inputs, LSTM_training_outputs, LSTM_testing_inputs, LSTM_test_outputs, training_set, testing_set, split_date
+
+def setup_inputs_outputs_stocks(initial_data):
+    """
+    """
+    # Separate data into training and testing sets
+    training_set, testing_set = train_test_split(initial_data, test_size=0.2, shuffle=False)
+    # split date
+    split_date = (training_set.tail(1)).iloc[0]['Date']
+    # We no longer need dates
+    training_set = training_set.drop('Date', axis=1)
+    testing_set = testing_set.drop('Date', axis=1)
+    # window_len tells us how many previous datapoints we keep track of
+    window_len = 10
+    LSTM_training_inputs = [] # Initialize
+    LSTM_testing_inputs = []
+    # Create training inputs
+    for index in range(len(training_set) - window_len):
+        temp_set = training_set[index: (index + window_len)].copy()
+        # Normalizes each column further to be aligned with rest of window...
+        # for col in norm_cols:
+        #     temp_set.loc[:, col] = temp_set[col]/temp_set[col].iloc[0] - 1
+        LSTM_training_inputs.append(temp_set)
+    # Create testing inputs
+    for index in range(len(testing_set) - window_len):
+        temp_set = testing_set[index: (index + window_len)].copy()
+        LSTM_testing_inputs.append(temp_set)
+    # Getting input dimensions
+    # print LSTM_testing_inputs
+    # Turn into numpy array
     LSTM_training_inputs = np.array([np.array(LSTM_training_input) for LSTM_training_input in LSTM_training_inputs])
     LSTM_testing_inputs = np.array([np.array(LSTM_testing_input) for LSTM_testing_input in LSTM_testing_inputs])
     # model output is next price normalised to 10th previous closing price
@@ -227,7 +324,7 @@ def save_model(crypto):
     # initial_data = get_crypto_data(crypto)
     # # We no longer need dates
     # crypto_data = initial_data.drop('Date', axis=1)
-    # # Separate data into training and testing sets 
+    # # Separate data into training and testing sets
     # training_set, testing_set = train_test_split(crypto_data, test_size=0.2, shuffle=False)
     # # window_len tells us how many previous datapoints we keep track of
     # window_len = 10
@@ -240,20 +337,20 @@ def save_model(crypto):
     #     # for col in norm_cols:
     #     #     temp_set.loc[:, col] = temp_set[col]/temp_set[col].iloc[0] - 1
     #     LSTM_training_inputs.append(temp_set)
-    # # Create testing inputs 
+    # # Create testing inputs
     # for index in range(len(testing_set) - window_len):
     #     temp_set = testing_set[index: (index + window_len)].copy()
     #     LSTM_testing_inputs.append(temp_set)
     # # Getting input dimensions
     # print LSTM_testing_inputs
-    # # Turn into numpy array 
+    # # Turn into numpy array
     # LSTM_training_inputs = np.array([np.array(LSTM_training_input) for LSTM_training_input in LSTM_training_inputs])
     # LSTM_testing_inputs = np.array([np.array(LSTM_testing_input) for LSTM_testing_input in LSTM_testing_inputs])
-    
+
     # # Get several days' worth of predictions
     # # random seed for reproducibility
     # np.random.seed(202)
-    # # we'll try to predict the closing price for the next 10 days 
+    # # we'll try to predict the closing price for the next 10 days
     # # change this value if you want to make longer/shorter prediction
     # pred_range = 10
     # # initialise model architecture
@@ -266,53 +363,53 @@ def save_model(crypto):
     # LSTM_training_outputs = np.array(LSTM_training_outputs)
     # # train model on data
     # # note: eth_history contains information on the training error per epoch
-    # model_history = model.fit(LSTM_training_inputs[:-pred_range], LSTM_training_outputs, 
+    # model_history = model.fit(LSTM_training_inputs[:-pred_range], LSTM_training_outputs,
     #                             epochs=50, batch_size=1, verbose=2, shuffle=True)
-    
+
     # random seed for reproducibility
     np.random.seed(202)
-    # Initialize model 
+    # Initialize model
     model = build_model(LSTM_training_inputs, output_size=1, neurons=20)
     # # model output is next price normalised to 10th previous closing price
     # LSTM_training_outputs = (training_set['Close'][window_len:].values/training_set['Close'][:-window_len].values)-1
     # LSTM_test_outputs = (testing_set['Close'][window_len:].values/testing_set['Close'][:-window_len].values)-1
     # train model on data
     # note: model_history contains information on the training error per epoch
-    model_history = model.fit(LSTM_training_inputs, LSTM_training_outputs, 
+    model_history = model.fit(LSTM_training_inputs, LSTM_training_outputs,
                                 epochs=50, batch_size=1, verbose=2, shuffle=True)
-    
+
     # save model
-    model.save('{}_model.h5'.format(crypto))
-    
-    # # Check training error 
+    model.save('./models/{}_model.h5'.format(crypto))
+
+    # # Check training error
     # check_training_error(model_history)
-    # 
+    #
     # # Plot subset of data
     # check_single_timepoint(initial_data, model, LSTM_testing_inputs, testing_set, 10, split_date)
-    
+
     #eth_preds = np.loadtxt('eth_preds.txt')
 
 def load_and_run_model(crypto):
     """
-    
+
     """
-    model_name = crypto + "_model.h5"
+    model_name = "./models/{}_model.h5".format(crypto)
     model = load_model(model_name)
     LSTM_training_inputs, LSTM_training_outputs, LSTM_testing_inputs, LSTM_test_outputs, training_set, testing_set, split_date = setup_inputs_outputs(crypto)
     scores = model.evaluate(LSTM_training_inputs, LSTM_training_outputs)
     # print "Training: ", scores
     # scores = model.evaluate(LSTM_testing_inputs, LSTM_test_outputs)
     # print "Testing: ", scores
-    initial_data = get_crypto_data('bitcoin')
+    initial_data = get_crypto_data(crypto)
     check_single_timepoint(initial_data, model, LSTM_testing_inputs, testing_set, 10, split_date)
     # # We no longer need dates
     # crypto_data = initial_data.drop('Date', axis=1)
-    # # Separate data into training and testing sets 
+    # # Separate data into training and testing sets
     # training_set, testing_set = train_test_split(crypto_data, test_size=0.2, shuffle=False)
     # # window_len tells us how many previous datapoints we keep track of
     # window_len = 10
     # LSTM_testing_inputs = []
-    # # Create testing inputs 
+    # # Create testing inputs
     # for index in range(len(testing_set) - window_len):
     #     temp_set = testing_set[index: (index + window_len)].copy()
     #     LSTM_testing_inputs.append(temp_set)
@@ -324,11 +421,40 @@ def load_and_run_model(crypto):
 
 def run_model(crypto):
     """
-    
-    """
-    # first save model 
-    save_model(crypto)
-    load_and_run_model(crypto)        
 
-run_model('dash')
+    """
+    # first save model
+    save_model(crypto)
+    load_and_run_model(crypto)
+
+def save_stock(stock):
+    initial_data = get_stock_data(stock)
+    LSTM_training_inputs, LSTM_training_outputs, LSTM_testing_inputs, LSTM_test_outputs, training_set, testing_set, split_date = setup_inputs_outputs_stocks(initial_data)
+    # random seed for reproducibility
+    np.random.seed(202)
+    # Initialize model
+    model = build_model(LSTM_training_inputs, output_size=1, neurons=20)
+    model_history = model.fit(LSTM_training_inputs, LSTM_training_outputs,
+                                epochs=50, batch_size=1, verbose=2, shuffle=True)
+
+    # save model
+    model.save('./models/{}_stock_model.h5'.format(stock))
+
+def analyze_stock(stock):
+    """
+
+    """
+    model_name = "./models/{}_stock_model.h5".format(stock)
+    model = load_model(model_name)
+    initial_data = get_stock_data(stock)
+    LSTM_training_inputs, LSTM_training_outputs, LSTM_testing_inputs, LSTM_test_outputs, training_set, testing_set, split_date = setup_inputs_outputs_stocks(initial_data)
+    scores = model.evaluate(LSTM_training_inputs, LSTM_training_outputs)
+    # print "Training: ", scores
+    # scores = model.evaluate(LSTM_testing_inputs, LSTM_test_outputs)
+    # print "Testing: ", scores
+    check_single_timepoint(initial_data, model, LSTM_testing_inputs, testing_set, 10, split_date)
+
+# save_stock('HMNY')
+analyze_stock('HMNY')
+# run_model('ethereum')
 # print get_crypto_data('iota')
